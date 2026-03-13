@@ -1,0 +1,12 @@
+
+
+Using a Canon R camera as a video stream source on Linux
+---------
+See list of supported models here: See http://www.gphoto.org/proj/libgphoto2/support.php for support
+
+setup, done once: sudo apt-get install gphoto2 v4l2loopback-utils ffmpeg -y 
+#may need to run in the same python venv as everything else
+sudo modprobe v4l2loopback exclusive_caps=1 max_buffer=2
+gphoto2 --stdout --capture-movie | ffmpeg -i - -vcodec rawvideo -pix_fmt yuv420p -threads 0 -f v4l2 /dev/video0 
+
+  
