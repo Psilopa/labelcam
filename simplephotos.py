@@ -19,6 +19,7 @@ _DEFAULT_QR_OVERLAY = True
 _DEFAULT_QR_LIVE = True	
 _TEXTCOLOR = (0,0 ,0)
 _VIEWERNAME = "simpleviewer"
+_TEXTPLACE = (40, 500)
 
 # For 'offline' testing 
 _NOCAMERA = True
@@ -29,6 +30,17 @@ log.setLevel(logging.DEBUG)
 log.addHandler(logging.StreamHandler())
 
 # ---- helper functions ---- 
+
+def window_exists(winname):
+    try:
+        cv2.getWindowProperty(winname, cv2.WND_PROP_AUTOSIZE) # any property
+        return True # that worked, so it exists
+    except cv2.error as e:
+        if e.code == -27: # (-27:Null pointer) lookup didn't find such a window
+            return False
+        else:
+            raise # some unanticipated error
+            
 def adjust_image(frame, contrast = 0.8, brightness = 89):
     return frame
 
@@ -121,14 +133,24 @@ class cvCamera(abc.ABC):
 
     @abc.abstractmethod
     def frame_get(self): pass # Should return successQ, frame
+
     @abc.abstractmethod
-    def setup(self): pass
-    @abc.abstractmethod
-    def shutdown(self): pass
+    def setup(self): 
+        # Set resolution
+#        cv2.namedWindow(_VIEWERNAME,  cv2.WINDOW_NORMAL)
+        cv2.namedWindow(_VIEWERNAME)
+        cv2.createTrackbar('BRI', _VIEWERNAME, 100, 200, self.on_barchange)  # Brightness -100 to 100
+        cv2.createTrackbar('CON', _VIEWERNAME,  10, 30, self.on_barchange)  # Contrast 1.0 to 3.0
+        return True
 
     def on_barchange(*args): 
-        args[0].brightness = cv2.getTrackbarPos('Contrast', _VIEWERNAME) / 10 #[0.0, 3.0]
-        args[0].contrast = cv2.getTrackbarPos('Brightness', _VIEWERNAME) - 50  #[-100, 100].
+        bri = cv2.getTrackbarPos('BRI', _VIEWERNAME) - 50  #[-50, 150].
+        con =  cv2.getTrackbarPos('CON', _VIEWERNAME) / 10 #[0.0, 3.0]
+        args[0].contrast = con
+        args[0].brightness = bri
+
+    @abc.abstractmethod
+    def shutdown(self): pass
 
     def zoom_digital(self, zoom):
         """Digital zoom. Soom range: [1-2]"""
@@ -184,25 +206,25 @@ class cvCamera(abc.ABC):
             log.debug(f"Saving a file triggered error {msg}")
         
     def show_frame(self):
+        font_scale = 0.6
         self.frame = adjust_image(self.frame, 2, 79)
         if _DEFAULT_QR_OVERLAY and self.lastidentifier:             
-            cv2.putText(self.frame, f"ID: {self.lastidentifier}", (40, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, _TEXTCOLOR, 2)            
-        if self._zoom == 1: # For speed, omit scaling at no zoom.
-            cv2.imshow(self.win_title, self.frame)
-        else:
+            cv2.putText(self.frame, f"ID: {self.lastidentifier}",_TEXTPLACE, cv2.FONT_HERSHEY_SIMPLEX, font_scale, _TEXTCOLOR, 2)            
+        if not self._zoom == 1: # For speed, omit scaling at no zoom.
             self.frame = self.zoom_digital(self._zoom)
-            cv2.imshow(self.win_title, self.frame)
+        cv2.imshow(_VIEWERNAME, self.frame)
     
     def on_key(self, key):
-        key_brightness_more = ord('B')
-        key_brightness_less = ord('b')
-        key_contrast_more = ord('C')
-        key_contrast_less = ord('c')
+        key_brightness_more = ord('b')
+        key_brightness_less = ord('n')
+        key_contrast_more = ord('c')
+        key_contrast_less = ord('v')
         key_zoom_in = ord('+')
         key_zoom_out  = ord('-')
-        key_newdir = ord('n')
-        key_save = ord("s")
+        key_newdir = ord('s')
+        key_save = ord("i")
         key_quit = ord("q")
+        log.debug(f"Got command char {chr(key)}")
         if key == key_save:
             log.debug("Trying to save.")
             self.on_save(self.still_image_n)
@@ -213,9 +235,11 @@ class cvCamera(abc.ABC):
         elif key == key_zoom_in: self.on_zoom(1)
         elif key == key_zoom_out:  self.on_zoom(-1)
         elif key == key_brightness_more: 
+            log.debug(f"Increasing brightness from {self.brightness}"  )
             self.brightness = min(100, self.brightness+10)  
-            print("brightness is ",  self.brightness )
-        elif key == key_brightness_less: self.brightness = max(-100, self.brightness-10) 
+        elif key == key_brightness_less: 
+            log.debug(f"Decreasing brightness from {self.brightness}"  )            
+            self.brightness = max(-100, self.brightness-10) 
         elif key == key_contrast_more: self.contrast = min(3, self.contrast*1.2)  
         elif key == key_contrast_less: self.contrast = max(0, self.contrast/1.2) 
         elif key == key_quit:
@@ -300,9 +324,13 @@ Parameters:
                 ids = _extract_pyzbar(self.frame)
                 if len(ids) == 1: self.lastidentifier = ids[0]
             self.show_frame()
-            key = cv2.waitKey(delay) & 0xFF
-            exitQ = self.on_key(key) # Should return True if an exit is needed
-            if exitQ: break
+            key = cv2.waitKey(delay) & 0xFF # lowest 2
+            if key == 255: pass # No nothign
+            else:
+                exitQ = self.on_key(key) # Should return True if an exit is needed
+                if exitQ: break
+            # Check if window is closed or user called for 
+            if not window_exists(_VIEWERNAME): break
 
 # --- Actual implementations ----
 class StillImageVideo(cvCamera): #for testing
@@ -312,6 +340,8 @@ class StillImageVideo(cvCamera): #for testing
         super().__init__(videodim,  stilldim)
         self.frame = cv2.imread(impath)
     def setup(self): 
+        rv = super().setup()
+        if not rv: return rv # Super setup failed
         self._frame_data = cv2.imread('./test.jpg')
         return True
     def shutdown(self):
@@ -336,14 +366,11 @@ class WebCamVideo(cvCamera):
         
     def setup(self):
         """Set up video device for capture"""
+        rv = super().setup()
+        if not rv: return rv # Super setup failed
         self.device = cv2.VideoCapture(self.device_address)
-        # Set resolution
         self.device.set(cv2.CAP_PROP_FRAME_WIDTH, self.still_w)
         self.device.set(cv2.CAP_PROP_FRAME_HEIGHT, self.still_h)        
-        self.viewer  = cv2.namedWindow(_VIEWERNAME)
-        cv2.createTrackbar('Contrast', _VIEWERNAME,  10, 30, self.on_barchange)  # Contrast 1.0 to 3.0
-        cv2.createTrackbar('Brightness', _VIEWERNAME, 50, 100, self.on_barchange)  # Brightness -50 to 50
-        if  not self.viewer: return False # Creating a viewer failed
         if ( self.device is None ) or ( not self.device.isOpened() ): return False    
         else: return True # Success
         
@@ -378,4 +405,3 @@ def onexit():
             
 # TODO: MOVE CAMERA SETUP TO TOML 
 # TODO: Store video option?
-# OVERLAY DISPLAY RESULT QR CONTENT?
