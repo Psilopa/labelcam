@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+# -*- coding: utf8 -*-
 """A tool for capturing still images from a video stream, storing them into a directory
 
 Intended for label image capturing and feeding an AI for data extraction.
@@ -17,11 +19,13 @@ _KEEP_ORIGINAL_DIM_ON_ZOOM = True
 _DEFAULT_MARK_DONE = "imaging_done"
 _DEFAULT_QR_OVERLAY = True	
 _DEFAULT_QR_LIVE = True	
-_TEXTCOLOR = (0,0 ,0)
+_TEXTCOLOR = (0,0,255)
+_TEXTSIZE = 0.7
+_TEXFONT =  cv2.FONT_HERSHEY_SIMPLEX
 _VIEWERNAME = "simpleviewer"
 
 # For 'offline' testing 
-_NOCAMERA = False
+_NOCAMERA = True
 
 # ---- setup logging ---- 
 log = logging.getLogger() # Overwrite if needed
@@ -40,9 +44,6 @@ def window_exists(winname):
         else:
             raise # some unanticipated error
             
-def adjust_image(frame, contrast = 0.8, brightness = 89):
-    return frame
-
 def update_filename(path,  add_element,  preprend = True, sep = "_"):
     """Adds to the filename path. """
     if preprend: return path.with_stem(add_element + sep + path.stem)
@@ -54,11 +55,6 @@ def nowstring(format = "%Y%m%d%H%M%S"):
 def shortID(uri_id): 
     return uri_id.split("/")[-1]
     
-def display(img, title=""):
-    """Display an image using cv2. Mostly for testing"""
-    cv2.imshow(title, img)    
-    cv2.waitKey(0)         # wait for user to press a key
-    cv2.destroyAllWindows() # Close all cv2 windows
 
 def shrink_to_maxdim(img,maxdim):
     md = max(img.shape)
@@ -131,6 +127,8 @@ class cvCamera(abc.ABC):
 #        self._ZOOM_PHYS_STEP = 10
         self.textplace = ( 20, 20 ) # Default position
         print("self.textplace = ",self.textplace  )
+        self.last_still_time = None
+        self.last_save_time = None
 
     @abc.abstractmethod
     def frame_get(self): pass # Should return successQ, frame
@@ -166,6 +164,10 @@ class cvCamera(abc.ABC):
             return cropped
 
     def on_still_image(self,  n):
+        """Returns success status."""
+	# grab raw data from the camera (with no overlay etc)
+        ret, self.frame = self.frame_get()
+        if not ret: return False # Could not read video	frame = 
         # Settings, should come from config file
         ATTEMPT_BARCODE = True
         RENAME_FILE_BY_TIME = True
@@ -203,20 +205,28 @@ class cvCamera(abc.ABC):
         try:
             self.save_image(sampleimage,filename)
             self.save_identifier(sampleimage,filename.with_suffix(".identifier"))
+            self.last_still_time = datetime.now() # Set last save time to now
+            return True
         except OSError as msg:
             log.debug(f"Saving a file triggered error {msg}")
+        return False
         
     def show_frame(self):
-        font_scale = 0.6
-        self.frame = adjust_image(self.frame, 2, 79)
+        frame = self.frame.copy() # Should probably generate a copy here as we draw into the frame
+        text = f"ID: {self.lastidentifier}"        
+        text2 = ""
+        if self.last_still_time and ( (datetime.now()-self.last_still_time).total_seconds() ) <1:
+            text2 = f" (taking image #{self.still_image_n-1})"
+        if self.last_save_time and ( (datetime.now()-self.last_save_time).total_seconds() ) < 1:
+            text2 = " (saving sample)."
+        text += text2
         if _DEFAULT_QR_OVERLAY and self.lastidentifier:    
-            h,w = self.frame.shape[0:2] # Original dimensions
-            self.textplace = (20, h-40)
-            cv2.putText(self.frame, f"ID: {self.lastidentifier}", self.textplace,  cv2.FONT_HERSHEY_SIMPLEX, font_scale, _TEXTCOLOR, 1)            
-#            cv2.putText(self.frame, f"ID: {self.lastidentifier}", (20, 20),  cv2.FONT_HERSHEY_SIMPLEX, font_scale, _TEXTCOLOR, 1)            
+            h,w = frame.shape[0:2] # Original dimensions
+            self.textplace = (20, h-20)
+            cv2.putText(frame, text, self.textplace,  _TEXFONT, _TEXTSIZE, _TEXTCOLOR, 2)                        
         if not self._zoom == 1: # For speed, omit scaling at no zoom.
-            self.frame = self.zoom_digital(self._zoom)
-        cv2.imshow(_VIEWERNAME, self.frame)
+            frame = self.zoom_digital(self._zoom)
+        cv2.imshow(_VIEWERNAME, frame)
     
     def on_key(self, key):
         key_brightness_more = ord('b')
@@ -304,6 +314,8 @@ Parameters:
         self.filepath = self.basedirectory /  Path(nowstring())
         # Force creating a dir on filesystem
         self.dir_already_renamed = False
+        self.last_save_time = datetime.now()
+        self.still_image_n = 1
         return self.filepath
   
 ##    def zoom_physical(self, zoom, zoomrange = 100):
@@ -358,8 +370,11 @@ class StillImageVideo(cvCamera): #for testing
     def frame_get(self): 
         """Return True, framedata (mirroring cv2 behavior)."""
         return (True,  self._frame_data)
-    def on_still_image(self, n): pass # Override to do nothing
-    def on_sample_done(self, mark_as_done = None): pass
+    def on_still_image(self, n): 
+        self.last_still_time = datetime.now() # Set last save time to now
+    def on_sample_done(self, mark_as_done = None): 
+        self.last_save_time = datetime.now() # Set last save time to now
+        self.still_image_n = 1
         
 
 class WebCamVideo(cvCamera):
