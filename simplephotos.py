@@ -19,10 +19,9 @@ _DEFAULT_QR_OVERLAY = True
 _DEFAULT_QR_LIVE = True	
 _TEXTCOLOR = (0,0 ,0)
 _VIEWERNAME = "simpleviewer"
-_TEXTPLACE = (40, 500)
 
 # For 'offline' testing 
-_NOCAMERA = True
+_NOCAMERA = False
 
 # ---- setup logging ---- 
 log = logging.getLogger() # Overwrite if needed
@@ -130,6 +129,8 @@ class cvCamera(abc.ABC):
         self._ZOOM_PHYSICAL = False
 #        self._ZOOM_PHYS_VAL = 10
 #        self._ZOOM_PHYS_STEP = 10
+        self.textplace = ( 20, 20 ) # Default position
+        print("self.textplace = ",self.textplace  )
 
     @abc.abstractmethod
     def frame_get(self): pass # Should return successQ, frame
@@ -164,14 +165,14 @@ class cvCamera(abc.ABC):
         else:
             return cropped
 
-    def on_save(self,  n):
+    def on_still_image(self,  n):
         # Settings, should come from config file
         ATTEMPT_BARCODE = True
         RENAME_FILE_BY_TIME = True
         RENAME_FILE_BY_BARCODE = True
         RENAME_DIR_BY_BARCODE = False
         # Set up subdirectory, if it did not exist already
-        if self.filepath is None: self.on_newdir()
+        if self.filepath is None: self.on_sample_done()
         # Create LabelImage object
         sampleimage = Labelmage(self.frame)
         filename= Path(f"{self.namebase}_{n}.{ext}")
@@ -208,8 +209,11 @@ class cvCamera(abc.ABC):
     def show_frame(self):
         font_scale = 0.6
         self.frame = adjust_image(self.frame, 2, 79)
-        if _DEFAULT_QR_OVERLAY and self.lastidentifier:             
-            cv2.putText(self.frame, f"ID: {self.lastidentifier}",_TEXTPLACE, cv2.FONT_HERSHEY_SIMPLEX, font_scale, _TEXTCOLOR, 2)            
+        if _DEFAULT_QR_OVERLAY and self.lastidentifier:    
+            h,w = self.frame.shape[0:2] # Original dimensions
+            self.textplace = (20, h-40)
+            cv2.putText(self.frame, f"ID: {self.lastidentifier}", self.textplace,  cv2.FONT_HERSHEY_SIMPLEX, font_scale, _TEXTCOLOR, 1)            
+#            cv2.putText(self.frame, f"ID: {self.lastidentifier}", (20, 20),  cv2.FONT_HERSHEY_SIMPLEX, font_scale, _TEXTCOLOR, 1)            
         if not self._zoom == 1: # For speed, omit scaling at no zoom.
             self.frame = self.zoom_digital(self._zoom)
         cv2.imshow(_VIEWERNAME, self.frame)
@@ -221,17 +225,17 @@ class cvCamera(abc.ABC):
         key_contrast_less = ord('v')
         key_zoom_in = ord('+')
         key_zoom_out  = ord('-')
-        key_newdir = ord('s')
-        key_save = ord("i")
+        key_sample_done = ord('s')
+        key_image = ord("i")
         key_quit = ord("q")
         log.debug(f"Got command char {chr(key)}")
-        if key == key_save:
+        if key == key_image:
             log.debug("Trying to save.")
-            self.on_save(self.still_image_n)
+            self.on_still_image(self.still_image_n)
             self.still_image_n += 1
-        elif key == key_newdir:
-            log.debug("Trying to move into a new directory")
-            self.on_newdir(mark_as_done = _DEFAULT_MARK_DONE)
+        elif key == key_sample_done:
+            log.debug("Saving sample")
+            self.on_sample_done(mark_as_done = _DEFAULT_MARK_DONE)
         elif key == key_zoom_in: self.on_zoom(1)
         elif key == key_zoom_out:  self.on_zoom(-1)
         elif key == key_brightness_more: 
@@ -245,7 +249,7 @@ class cvCamera(abc.ABC):
         elif key == key_quit:
             log.debug("Trying to quit")
             # Force a final newdir to make sure the last directory is treated like all the others
-            self.on_newdir(mark_as_done = _DEFAULT_MARK_DONE)
+            self.on_sample_done(mark_as_done = _DEFAULT_MARK_DONE)
             return True
         return False
                 
@@ -281,7 +285,7 @@ class cvCamera(abc.ABC):
             self._ZOOM_PHYS_VAL -= self._ZOOM_PHYS_STEP
         else: self._zoom = max(self._zoom - step, zoom_min)
 
-    def on_newdir(self, mark_as_done = None):
+    def on_sample_done(self, mark_as_done = None):
         """Move to a new directory.  
 
 Sets self.filepath to a timestamp-based directory, but does not create it on disk.
@@ -290,10 +294,13 @@ Parameters:
 - mark_as_done: if a non-empty string, write a file with this name into the completed directory.
 """
 	# Create a new timestamp-based directory name
-        if mark_as_done and self.filepath:
+        if mark_as_done and self.filepath and self.still_image_n > 1:
             log.debug("Trying to create a marked file to sign the directory is ready for postprocessing.")                      
-            donefp = self.filepath / Path(mark_as_done)
-            donefp.touch(exist_ok = True)
+            try:
+                donefp = self.filepath / Path(mark_as_done)            
+                donefp.touch(exist_ok = True)
+            except FileNotFoundError as msg:
+                log.error(msg)
         self.filepath = self.basedirectory /  Path(nowstring())
         # Force creating a dir on filesystem
         self.dir_already_renamed = False
@@ -334,11 +341,12 @@ Parameters:
 
 # --- Actual implementations ----
 class StillImageVideo(cvCamera): #for testing
-    def __init__(self, impath,   videodim = (_DEFAULT_VIDEO_W, _DEFAULT_VIDEO_H),
-                 stilldim = (_DEFAULT_STILL_W,  _DEFAULT_STILL_H)
-                 ):
-        super().__init__(videodim,  stilldim)
+    def __init__(self, impath):
+        super().__init__()
         self.frame = cv2.imread(impath)
+        self.video_h,  self.video_w, _ = self.frame.shape
+        self.textplace = ( 20,   20 )        
+        log.debug(f"Frame shape is {self.video_w}x{self.video_h}")
     def setup(self): 
         rv = super().setup()
         if not rv: return rv # Super setup failed
@@ -350,8 +358,8 @@ class StillImageVideo(cvCamera): #for testing
     def frame_get(self): 
         """Return True, framedata (mirroring cv2 behavior)."""
         return (True,  self._frame_data)
-    def on_save(self, n): pass # Override to do nothing
-    def on_newdir(self, mark_as_done = None): pass
+    def on_still_image(self, n): pass # Override to do nothing
+    def on_sample_done(self, mark_as_done = None): pass
         
 
 class WebCamVideo(cvCamera):
@@ -369,8 +377,8 @@ class WebCamVideo(cvCamera):
         rv = super().setup()
         if not rv: return rv # Super setup failed
         self.device = cv2.VideoCapture(self.device_address)
-        self.device.set(cv2.CAP_PROP_FRAME_WIDTH, self.still_w)
-        self.device.set(cv2.CAP_PROP_FRAME_HEIGHT, self.still_h)        
+        self.device.set(cv2.CAP_PROP_FRAME_WIDTH, self.video_w)
+        self.device.set(cv2.CAP_PROP_FRAME_HEIGHT, self.video_h)        
         if ( self.device is None ) or ( not self.device.isOpened() ): return False    
         else: return True # Success
         
